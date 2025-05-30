@@ -12,7 +12,7 @@ import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/ge
 import poppler from 'pdf-poppler'; 
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { GEMMA_PROMPT_TEMPLATES } from './prompts';
+import { GEMMA_PROMPT_TEMPLATES } from './prompts.js';
 
 const execPromise = promisify(exec);
 
