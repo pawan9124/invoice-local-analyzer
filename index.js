@@ -212,7 +212,7 @@ const downloadInvoiceFiles = async (fetchedDataByOption) => {
     await fsPromises.mkdir(DOWNLOADED_FILES_BASE_DIR, { recursive: true });
     let downloadedCount = 0, failedCount = 0;
     for (const doc of filesToDownloadList) {
-        const localFileName = doc.original_filename || path.basename(doc.file_name);
+        const localFileName = path.basename(doc.file_name) || doc.original_filename;
         const localDownloadPath = path.join(DOWNLOADED_FILES_BASE_DIR, localFileName);
         try {
             await downloadSingleFileFromS3(doc.file_name, localDownloadPath); downloadedCount++;
