@@ -1,0 +1,31 @@
+{
+  "61710e33c07db22153da2d82_STRMN_emailed<cust-service.usa@straumann.com>_1703919574384_Invoice 967308104.pdf": {
+    "report_type": "INV_AMOUNT_VARIANCE",
+    "supplier": "STRMN",
+    "reason_from_gemma": "discount_amount not correctly applied to calculate total.",
+    "suggested_fix_data": {
+      "taxes": 0
+    },
+    "original_data_snippet": {
+      "inv_num": "967308104",
+      "total": 368.25,
+      "inv_date": "2023-12-29T10:00:00.000Z",
+      "status": "DISPUTED"
+    }
+  },
+  "61710e33c07db22153da2d82_STRMN_emailed<cust-service.usa@straumann.com>_1705094344196_Invoice 967475029.pdf": {
+    "report_type": "INV_AMOUNT_VARIANCE",
+    "supplier": "STRMN",
+    "reason_from_gemma": "discount_amount not correctly applied to calculate total.",
+    "suggested_fix_data": {
+      "taxes": 0,
+      "shipping": 0
+    },
+    "original_data_snippet": {
+      "inv_num": "967475029",
+      "total": 433.5,
+      "inv_date": "2024-01-12T10:00:00.000Z",
+      "status": "DISPUTED"
+    }
+  }
+}

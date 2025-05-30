@@ -1,0 +1,35 @@
+{
+  "name": "invoice-processor",
+  "version": "1.0.0",
+  "description": "A script to fetch and process invoices from MongoDB.",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "mongodb",
+    "invoice",
+    "automation",
+    "nodejs",
+    "s3",
+    "gemma",
+    "ai",
+    "tesseract",
+    "google-generative-ai",
+    "pdftoppm"
+  ],
+  "author": "Your Name/Team",
+  "license": "ISC",
+  "dependencies": {
+    "mongodb": "^6.5.0",
+    "inquirer": "^9.2.20",
+    "dotenv": "^16.4.5",
+    "aws-sdk": "^2.1600.0",
+    "colors": "^1.4.0",
+    "tesseract.js": "^5.0.5",
+    "@google/generative-ai": "^0.11.3",
+    "pdf-poppler": "^0.2.1"
+  }
+}
