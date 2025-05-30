@@ -33,7 +33,7 @@ const ANALYSIS_RESULTS_FILE = path.join(PROJECT_ROOT_OUTPUT_DIR, 'analysisResult
 const TEMP_IMAGE_DIR = path.join(PROJECT_ROOT_OUTPUT_DIR, 'temp_images'); 
 
 // --- Gemma Configuration ---
-const GEMMA_API_KEY ='AIzaSyCboS32muJ535aXKDJ1QSgIrmepIdR2WOA'; // Replace with your actual key or use process.env
+const GEMMA_API_KEY = process.env.GEMMA_API_KEY// Replace with your actual key or use process.env
 const GEMMA_MODEL_NAME = process.env.GEMMA_MODEL_NAME || "gemma-3-27b-it";
 
 let genAI;
