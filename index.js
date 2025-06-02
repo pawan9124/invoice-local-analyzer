@@ -532,7 +532,8 @@ async function analyzeInvoicesWithGemma(invoicesToAnalyze, analysisConfig) {
             suggested_fix_data: suggestedFix,
             original_data_snippet: {
                 inv_num: docToAnalyze.inv_num, total: docToAnalyze.total, inv_date: docToAnalyze.inv_date,
-                status: docToAnalyze.status, pending_reason: docToAnalyze.pending_reason
+                status: docToAnalyze.status, pending_reason: docToAnalyze.pending_reason,
+                group_id: docToAnalyze.group_id
             }
         };
         if (suggestedFix) {
