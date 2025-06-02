@@ -18,6 +18,8 @@ const execPromise = promisify(exec);
 
 // Load environment variables from .env file
 dotenv.config();
+// At the top of the file with other constants:
+const API_CALL_DELAY_MS = 5000; // 5 seconds delay between Gemma API calls
 
 let password = process.env.MONGO_PASSWORD;
 password = encodeURIComponent(password)
@@ -93,17 +95,75 @@ async function closeApp() {
 }
 
 // --- GEMMA PROMPT TEMPLATES ---
+// Add a helper for delay at the top of the file if not already there
 
 async function cleanupPreviousData() {
     console.log('\n--- Cleaning up previous data ---'.yellow);
-    try { await fsPromises.unlink(METADATA_OUTPUT_FILE); console.log(`Deleted: ${METADATA_OUTPUT_FILE}`.grey); }
-    catch (e) { if (e.code !== 'ENOENT') console.error(`Error deleting ${METADATA_OUTPUT_FILE}:`.red, e); else console.log(`Not found: ${METADATA_OUTPUT_FILE}`.grey); }
-    try { await fsPromises.unlink(ANALYSIS_RESULTS_FILE); console.log(`Deleted: ${ANALYSIS_RESULTS_FILE}`.grey); }
-    catch (e) { if (e.code !== 'ENOENT') console.error(`Error deleting ${ANALYSIS_RESULTS_FILE}:`.red, e); else console.log(`Not found: ${ANALYSIS_RESULTS_FILE}`.grey); }
-    try { await fsPromises.rm(DOWNLOADED_FILES_BASE_DIR, { recursive: true, force: true }); console.log(`Deleted: ${DOWNLOADED_FILES_BASE_DIR}`.grey); }
-    catch (e) { if (e.code !== 'ENOENT') console.error(`Error deleting ${DOWNLOADED_FILES_BASE_DIR}:`.red, e); else console.log(`Not found: ${DOWNLOADED_FILES_BASE_DIR}`.grey); }
-    try { await fsPromises.rm(TEMP_IMAGE_DIR, { recursive: true, force: true }); console.log(`Deleted: ${TEMP_IMAGE_DIR}`.grey); }
-    catch (e) { if (e.code !== 'ENOENT') console.error(`Error deleting ${TEMP_IMAGE_DIR}:`.red, e); else console.log(`Not found: ${TEMP_IMAGE_DIR}`.grey); }
+
+    // Cleanup metadata file
+    try {
+        console.log(`[Cleanup] Attempting to unlink: ${METADATA_OUTPUT_FILE}`.grey);
+        await fsPromises.unlink(METADATA_OUTPUT_FILE);
+        console.log(`[Cleanup] Deleted: ${METADATA_OUTPUT_FILE}`.grey);
+    } catch (e) {
+        if (e.code === 'ENOENT') {
+            console.log(`[Cleanup] Metadata file not found, no cleanup needed: ${METADATA_OUTPUT_FILE}`.grey);
+        } else {
+            console.error(`[Cleanup] Error deleting metadata file ${METADATA_OUTPUT_FILE}:`.red, e);
+        }
+    }
+
+    // Cleanup analysis results file
+    try {
+        console.log(`[Cleanup] Attempting to unlink: ${ANALYSIS_RESULTS_FILE}`.grey);
+        await fsPromises.unlink(ANALYSIS_RESULTS_FILE);
+        console.log(`[Cleanup] Deleted: ${ANALYSIS_RESULTS_FILE}`.grey);
+    } catch (e) {
+        if (e.code === 'ENOENT') {
+            console.log(`[Cleanup] Analysis results file not found, no cleanup needed: ${ANALYSIS_RESULTS_FILE}`.grey);
+        } else {
+            console.error(`[Cleanup] Error deleting analysis results file ${ANALYSIS_RESULTS_FILE}:`.red, e);
+        }
+    }
+
+    // Cleanup downloaded files directory
+    console.log(`[Cleanup] Attempting to remove directory recursively: ${DOWNLOADED_FILES_BASE_DIR}`.magenta);
+    try {
+        await fsPromises.rm(DOWNLOADED_FILES_BASE_DIR, { recursive: true, force: true });
+        // Check if it still exists to confirm deletion
+        try {
+            await fsPromises.access(DOWNLOADED_FILES_BASE_DIR);
+            console.warn(`[Cleanup] WARNING: Directory ${DOWNLOADED_FILES_BASE_DIR} still exists after rm command. Possible permissions issue or locked files.`.yellow.bold);
+        } catch (accessError) {
+            if (accessError.code === 'ENOENT') {
+                console.log(`[Cleanup] Successfully deleted directory: ${DOWNLOADED_FILES_BASE_DIR}`.grey);
+            } else {
+                console.warn(`[Cleanup] Error checking directory ${DOWNLOADED_FILES_BASE_DIR} status after rm: ${accessError.message}`.yellow);
+            }
+        }
+    } catch (e) {
+        // The force:true option should prevent ENOENT from being an error here,
+        // but other errors like permission issues would be caught.
+        console.error(`[Cleanup] Error during fsPromises.rm for ${DOWNLOADED_FILES_BASE_DIR}:`.red, e);
+    }
+
+    // Cleanup temp images directory
+    console.log(`[Cleanup] Attempting to remove directory recursively: ${TEMP_IMAGE_DIR}`.magenta);
+    try {
+        await fsPromises.rm(TEMP_IMAGE_DIR, { recursive: true, force: true });
+        try {
+            await fsPromises.access(TEMP_IMAGE_DIR);
+            console.warn(`[Cleanup] WARNING: Directory ${TEMP_IMAGE_DIR} still exists after rm command.`.yellow.bold);
+        } catch (accessError) {
+            if (accessError.code === 'ENOENT') {
+                console.log(`[Cleanup] Successfully deleted directory: ${TEMP_IMAGE_DIR}`.grey);
+            } else {
+                console.warn(`[Cleanup] Error checking directory ${TEMP_IMAGE_DIR} status after rm: ${accessError.message}`.yellow);
+            }
+        }
+    } catch (e) {
+        console.error(`[Cleanup] Error during fsPromises.rm for ${TEMP_IMAGE_DIR}:`.red, e);
+    }
     console.log('--- Cleanup finished ---'.yellow);
 }
 
@@ -407,6 +467,9 @@ function constructGemmaPrompt(invoiceData, pdfTextIfAvailable, reportType, analy
 
     return promptText;
 }
+
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
 async function callGemmaApi(promptParts, invoiceFileName, analysisConfig) {
     if (!genAI) {
         const errorMsg = "Gemma SDK (GoogleGenerativeAI) not initialized. Check GEMMA_API_KEY.";
@@ -416,32 +479,79 @@ async function callGemmaApi(promptParts, invoiceFileName, analysisConfig) {
 
     console.log(`\nCalling Gemma API for: ${invoiceFileName} using model ${GEMMA_MODEL_NAME}`.blue);
 
-    try {
-        const model = genAI.getGenerativeModel({
-            model: GEMMA_MODEL_NAME,
-            safetySettings: [
-                { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
-                { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
-                { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
-                { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
-            ],
-        });
+    const MAX_RETRIES = 3;
+    let attempts = 0;
+    let currentDelay = 60000; // Default 60 seconds for 429, API might provide specific retry-after
 
-        const result = await model.generateContent(promptParts);
-        const response = await result.response;
-        const text = response.text();
+    while (attempts < MAX_RETRIES) {
+        try {
+            const model = genAI.getGenerativeModel({
+                model: GEMMA_MODEL_NAME,
+                safetySettings: [
+                    { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
+                    { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
+                    { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
+                    { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
+                ],
+            });
 
-        console.log(`Gemma raw response for ${invoiceFileName}:`.grey, text.substring(0, 200) + "...");
-        return text.trim();
+            const result = await model.generateContent(promptParts);
+            const response = await result.response;
+            const text = response.text();
 
-    } catch (error) {
-        console.error(`Error calling Gemma API for ${invoiceFileName} via SDK:`.red, error.message);
-        if (error.response && error.response.promptFeedback) {
-            console.error("Prompt Feedback:".red, error.response.promptFeedback);
+            console.log(`Gemma raw response for ${invoiceFileName}:`.grey, text.substring(0, 200) + "...");
+            return text.trim(); // Success
+
+        } catch (error) {
+            attempts++;
+            console.error(`Error calling Gemma API for ${invoiceFileName} (Attempt ${attempts}/${MAX_RETRIES}):`.red, error.message);
+
+            // Check for rate limiting error (e.g., 429)
+            // The actual error structure might vary based on how @google/genai surfaces HTTP status.
+            // For this example, we'll check if error.message contains "429" or "quota".
+            // A more robust check would inspect error.status or a specific error code if available from the SDK.
+            let isRateLimitError = false;
+            let specificRetryDelay = null;
+
+            if (error.message && (error.message.includes("429") || error.message.toLowerCase().includes("quota"))) {
+                isRateLimitError = true;
+                // Try to parse retryDelay from error message if Google's API provides it like in your example
+                const retryDelayMatch = error.message.match(/"retryDelay":"(\d+)s"/);
+                if (retryDelayMatch && retryDelayMatch[1]) {
+                    specificRetryDelay = parseInt(retryDelayMatch[1], 10) * 1000; // Convert seconds to ms
+                    console.log(`API suggests retry_delay of ${specificRetryDelay / 1000}s.`.yellow);
+                }
+            }
+
+            // Also check for promptFeedback if available (e.g. blocked due to safety)
+            if (error.response && error.response.promptFeedback) {
+                console.error("Prompt Feedback:".red, error.response.promptFeedback);
+                // If it's a safety block, retrying might not help with the same prompt.
+                // You might decide not to retry for safety blocks.
+                if (error.response.promptFeedback.blockReason) {
+                    return `Gemma API call blocked due to safety settings: ${error.response.promptFeedback.blockReason}.`;
+                }
+            }
+
+
+            if (isRateLimitError && attempts < MAX_RETRIES) {
+                const waitTime = specificRetryDelay || currentDelay;
+                console.warn(`Rate limit exceeded for ${invoiceFileName}. Waiting ${waitTime / 1000}s before retry ${attempts + 1}...`.yellow);
+                await delay(waitTime);
+                currentDelay *= 2; // Exponential backoff for subsequent generic 429s if API doesn't specify
+                continue; // Retry the loop
+            } else if (attempts >= MAX_RETRIES) {
+                console.error(`Max retries reached for ${invoiceFileName}. Giving up.`.red);
+                return `Gemma SDK call failed after ${MAX_RETRIES} attempts: ${error.message}.`;
+            }
+            // For other types of errors, or if max retries reached for non-rate-limit errors
+            return `Gemma SDK call failed: ${error.message}.`;
         }
-        return `Gemma SDK call failed: ${error.message}.`;
     }
+    // Should not be reached if MAX_RETRIES > 0
+    return `Gemma SDK call failed exhaustively for ${invoiceFileName}.`;
 }
+
 async function analyzeInvoicesWithGemma(invoicesToAnalyze, analysisConfig) {
     console.log(`\n--- Starting AI Analysis for ${invoicesToAnalyze.length} Invoices ---`.cyan.bold);
     const analysisResults = {};
@@ -452,9 +562,16 @@ async function analyzeInvoicesWithGemma(invoicesToAnalyze, analysisConfig) {
     }
 
     for (let i = 0; i < invoicesToAnalyze.length; i++) {
+        // Add delay before processing each invoice
+        if (i > 0) { // No delay before the very first call
+            console.log(`Waiting ${API_CALL_DELAY_MS / 1000}s before next API call...`.gray);
+            await delay(API_CALL_DELAY_MS);
+        }
+
         const docToAnalyze = invoicesToAnalyze[i].doc;
         const reportType = invoicesToAnalyze[i].reportType;
 
+        // ... (rest of the function logic remains the same for getting pdfTextContent, promptForGemma) ...
         if (!docToAnalyze || !docToAnalyze.file_name) {
             console.warn(`Skipping analysis for item at index ${i} due to missing document data or file_name.`.yellow);
             analysisResults[docToAnalyze?.file_name || `unknown_file_at_index_${i}`] = {
@@ -471,18 +588,17 @@ async function analyzeInvoicesWithGemma(invoicesToAnalyze, analysisConfig) {
 
         let pdfTextContent = null;
         let gemmaResponse;
-        let analysisReason = "Analysis not performed.";
+        let analysisReason = "Analysis not performed."; 
         let suggestedFix = null;
 
         if (analysisConfig.include_pdf_content) {
             const pdfFileName = path.basename(docToAnalyze.file_name) || docToAnalyze.original_filename;
             const pdfPath = path.join(DOWNLOADED_FILES_BASE_DIR, pdfFileName);
-            // Use the integrated extractTextFromPdf (which is user's extractTextTesseract)
-            pdfTextContent = await extractTextFromPdf(pdfPath, pdfFileName);
+            pdfTextContent = await extractTextFromPdf(pdfPath, pdfFileName); 
 
             if (pdfTextContent && pdfTextContent.startsWith("PDF_TOO_LARGE:")) {
                 analysisReason = pdfTextContent;
-                gemmaResponse = analysisReason;
+                gemmaResponse = analysisReason; 
                 console.log(`Analysis for ${docToAnalyze.file_name}: ${analysisReason}`.yellow);
             } else if (pdfTextContent === null) {
                 analysisReason = "PDF text extraction failed.";
@@ -491,16 +607,16 @@ async function analyzeInvoicesWithGemma(invoicesToAnalyze, analysisConfig) {
             }
         }
 
-        // Only call Gemma if PDF wasn't too large and text extraction didn't explicitly fail to a point of no text
         if (!(analysisReason.startsWith("PDF_TOO_LARGE:") || analysisReason === "PDF text extraction failed.")) {
             const promptForGemma = constructGemmaPrompt(docToAnalyze, pdfTextContent, reportType, analysisConfig);
-            gemmaResponse = await callGemmaApi(promptForGemma, docToAnalyze.file_name, analysisConfig);
+            gemmaResponse = await callGemmaApi(promptForGemma, docToAnalyze.file_name, analysisConfig); 
 
-            analysisReason = gemmaResponse;
+            analysisReason = gemmaResponse; 
             const fixDataMarker = "SUGGESTED_FIX_DATA:";
             const markerIndex = (gemmaResponse || "").indexOf(fixDataMarker);
 
             if (markerIndex !== -1) {
+                // ... (rest of the parsing logic for suggested_fix as before)
                 analysisReason = gemmaResponse.substring(0, markerIndex).trim();
                 const potentialJsonString = gemmaResponse.substring(markerIndex + fixDataMarker.length).trim();
                 let jsonStringToParse = potentialJsonString;
@@ -515,15 +631,14 @@ async function analyzeInvoicesWithGemma(invoicesToAnalyze, analysisConfig) {
                 if (jsonStringToParse) {
                     try {
                         suggestedFix = JSON.parse(jsonStringToParse);
-                        console.log(`Parsed suggested fix for ${docToAnalyze.file_name}:`.magenta, suggestedFix);
+                        // console.log(`Parsed suggested fix for ${docToAnalyze.file_name}:`.magenta, suggestedFix); // Already logged if successful
                     } catch (e) {
                         console.warn(`Could not parse SUGGESTED_FIX_DATA JSON for ${docToAnalyze.file_name}. Attempted: "${jsonStringToParse.substring(0, 100)}...". Error:`.yellow, e.message);
                     }
                 }
             }
-            console.log(`Gemma analysis reason for ${docToAnalyze.file_name}: ${analysisReason}`.green);
+            // console.log(`Gemma analysis reason for ${docToAnalyze.file_name}: ${analysisReason}`.green); // Already logged if successful by callGemmaApi
         }
-
 
         analysisResults[docToAnalyze.file_name] = {
             report_type: reportType,
@@ -536,8 +651,10 @@ async function analyzeInvoicesWithGemma(invoicesToAnalyze, analysisConfig) {
                 group_id: docToAnalyze.group_id
             }
         };
-        if (suggestedFix) {
-            console.log(`Gemma suggested fix for ${docToAnalyze.file_name}:`.cyan, suggestedFix);
+        // Moved detailed logging to after storing, to ensure it's always based on final values
+        console.log(`Stored analysis for ${docToAnalyze.file_name}: Reason -> ${analysisResults[docToAnalyze.file_name].reason_from_gemma}`.green);
+        if (analysisResults[docToAnalyze.file_name].suggested_fix_data) {
+            console.log(`Stored suggested fix for ${docToAnalyze.file_name}:`.cyan, analysisResults[docToAnalyze.file_name].suggested_fix_data);
         }
         console.log("-".repeat(60).grey);
     }
@@ -552,8 +669,8 @@ async function analyzeInvoicesWithGemma(invoicesToAnalyze, analysisConfig) {
 
 async function runAnalysisCycle(client) { // Accepts the global client
     const cycleInputs = await getUserInputsForCycle();
-
-    if (cycleInputs.clear_previous_data_for_cycle) {
+    console.log("cycleInputs && cycleInputs.clear_previous_data_for_cycle ", cycleInputs, "input", cycleInputs.clear_previous_data_for_cycle)
+    if (cycleInputs && cycleInputs.clear_previous_data === true) {
         await cleanupPreviousData();
     } else {
         console.log("\nSkipping cleanup for this run.".yellow);
