@@ -22,9 +22,10 @@ dotenv.config();
 let password = process.env.MONGO_PASSWORD;
 password = encodeURIComponent(password)
 
-let MONGO_CONNECT_STR = `mongodb+srv://${process.env.MONGO_USERNAME}:${password}@cluster0.n1c8q.mongodb.net` 
 // --- Configuration ---
-const MONGODB_URI = `mongodb+srv://reports:${password}@cluster0.n1c8q.mongodb.net` 
+const MONGODB_URI = `mongodb+srv://${process.env.MONGO_USERNAME}:${password}@cluster0.n1c8q.mongodb.net`
+
+console.log("MONGODB_URI", MONGODB_URI)
 
 const COLLECTION_NAME = 'Invoices';
 const PROJECT_ROOT_OUTPUT_DIR = path.join(process.cwd(), 'data');
@@ -447,7 +448,7 @@ async function analyzeInvoicesWithGemma(invoicesToAnalyze, analysisConfig) {
         let suggestedFix = null;
 
         if (analysisConfig.include_pdf_content) {
-            const pdfFileName = docToAnalyze.original_filename || path.basename(docToAnalyze.file_name);
+            const pdfFileName = path.basename(docToAnalyze.file_name) || docToAnalyze.original_filename;
             const pdfPath = path.join(DOWNLOADED_FILES_BASE_DIR, pdfFileName);
             // Use the integrated extractTextFromPdf (which is user's extractTextTesseract)
             pdfTextContent = await extractTextFromPdf(pdfPath, pdfFileName); 

@@ -57,12 +57,23 @@ export const GEMMA_PROMPT_TEMPLATES = {
                      "append on a new line: SUGGESTED_FIX_DATA: {\"supplier\": \"<identified_supplier_name>\"}.",
         criteria: [ "Supplier field is missing or unrecognized.", "Key identifying information like invoice number or PO number is missing, making routing difficult.", "Bill_to or ship_to address information is incomplete or ambiguous." ]
     },
-     "SHIPTOISSUE": { 
-        base_prompt: "You are an expert invoice analyst. Invoice (file: {file_name}) flagged for ship_to address issue, status 'DISPUTED'. 'ship_to' in JSON: '{ship_to_value}'.\n" +
+    "SHIPTOISSUE": {
+        base_prompt: "You are an expert invoice analyst. This invoice (file: {file_name}) is flagged for a potential ship_to address issue and is currently in 'DISPUTED' status. The 'ship_to' value in the provided JSON data is: '{ship_to}'.\n" +
                      "Invoice JSON Data:\n```json\n{json_data}\n```\n" +
-                     "{pdf_content_section}\n" +
-                     "Why might this be an issue, considering criteria like: {criteria_list}?\n" +
-                     "Respond with ONLY the most probable reason as a concise string.",
-        criteria: [ "ship_to field is empty, null, or missing.", "ship_to address seems incomplete (e.g., missing street, city, or postal code).", "ship_to address does not match expected format or known locations." ]
+            "{pdf_content_section}\n\n" + // Placeholder for PDF text
+            "Tasks:\n" +
+            "1. Identify the most probable reason why the 'ship_to' address might be considered an issue, based on these criteria: {criteria_list}. Respond with ONLY this reason as a concise string.\n" +
+            "2. After the reason, if you can suggest a correction for the 'ship_to' address, provide it. Follow these rules for the suggestion:\n" +
+            "   a. If the 'ship_to' value in the JSON ('{ship_to_value}') is empty, null, missing, or incomplete, AND you can confidently identify a complete and correct 'ship_to' address from the PDF content, use that identified address.\n" +
+            "   b. If the 'ship_to' value in the JSON is empty, null, or missing, AND no clear 'ship_to' address is identifiable from the PDF, BUT a 'bill_to' address is present and seems complete in the JSON data, suggest using the 'bill_to' address as the 'ship_to' address.\n" +
+            "   c. If you provide a suggested 'ship_to' address (either from PDF or by using 'bill_to'), also provide your confidence in this suggestion as a percentage (0-100).\n" +
+            "   d. Format your suggested fix (if any) on a new line after the reason, strictly as: SUGGESTED_FIX_DATA: {\"ship_to\": \"<suggested_full_address_string>\", \"confidence\": <percentage_integer>}\n" +
+            "If no fix can be confidently suggested according to rules a or b, only provide the reason from Task 1.",
+        criteria: [
+            "ship_to field is empty, null, or missing in the JSON data.",
+            "ship_to address in JSON seems incomplete (e.g., missing street, city, or postal code).",
+            "ship_to address in JSON does not match expected format or known valid locations.",
+            "ship_to address in JSON is present, but PDF content clearly shows a different or more complete ship_to address."
+        ]
     }
 };
