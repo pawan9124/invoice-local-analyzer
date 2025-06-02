@@ -9,7 +9,7 @@ import AWS from 'aws-sdk';
 import colors from 'colors';
 import Tesseract from 'tesseract.js';
 import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
-import poppler from 'pdf-poppler'; 
+import poppler from 'pdf-poppler';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { GEMMA_PROMPT_TEMPLATES } from './prompts.js';
@@ -32,7 +32,7 @@ const PROJECT_ROOT_OUTPUT_DIR = path.join(process.cwd(), 'data');
 const METADATA_OUTPUT_FILE = path.join(PROJECT_ROOT_OUTPUT_DIR, 'fetchedDataFile.js');
 const DOWNLOADED_FILES_BASE_DIR = path.join(PROJECT_ROOT_OUTPUT_DIR, 'downloaded_files');
 const ANALYSIS_RESULTS_FILE = path.join(PROJECT_ROOT_OUTPUT_DIR, 'analysisResults.json');
-const TEMP_IMAGE_DIR = path.join(PROJECT_ROOT_OUTPUT_DIR, 'temp_images'); 
+const TEMP_IMAGE_DIR = path.join(PROJECT_ROOT_OUTPUT_DIR, 'temp_images');
 
 // --- Gemma Configuration ---
 const GEMMA_API_KEY = process.env.GEMMA_API_KEY// Replace with your actual key or use process.env
@@ -65,6 +65,33 @@ const SELECTION_OPTIONS = [
     "SHIPTOISSUE"
 ];
 
+// --- Global MongoDB Client ---
+let mongoClient;
+
+async function initializeApp() {
+    if (!mongoClient || !mongoClient.topology || !mongoClient.topology.isConnected()) {
+        console.log("\nConnecting to MongoDB...".cyan);
+        mongoClient = new MongoClient(MONGODB_URI);
+        try {
+            await mongoClient.connect();
+            console.log("Successfully connected to MongoDB for this session.".green);
+        } catch (err) {
+            console.error("FATAL: Could not connect to MongoDB at startup.".red, err);
+            if (err.cause) console.error("Cause:".red, err.cause);
+            process.exit(1); // Exit if initial connection fails
+        }
+    } else {
+        console.log("MongoDB connection already established.".blue);
+    }
+}
+
+async function closeApp() {
+    if (mongoClient && mongoClient.topology && mongoClient.topology.isConnected()) {
+        await mongoClient.close();
+        console.log("\nMongoDB connection closed. Exiting script.".grey);
+    }
+}
+
 // --- GEMMA PROMPT TEMPLATES ---
 
 async function cleanupPreviousData() {
@@ -91,19 +118,19 @@ async function promptUser(questions) {
             .then(answers => {
                 if (answers === undefined) {
                     console.error('[DEBUG] Inquirer.prompt resolved with undefined! This is unexpected.'.red.bold);
-                    resolve({}); 
+                    resolve({});
                     return;
                 }
                 resolve(answers);
             })
             .catch(err => {
-                console.error('[DEBUG] Inquirer.prompt promise rejected:'.red, err); 
+                console.error('[DEBUG] Inquirer.prompt promise rejected:'.red, err);
                 reject(err);
             });
     });
 }
 
-async function getUserInputs() {
+async function getUserInputsForCycle() {
     console.log('--- Invoice Data Fetcher ---'.cyan);
     const questions = [
         { type: 'confirm', name: 'clear_previous_data', message: 'Clear previously generated data (metadata, downloads, analysis results)?', default: false, },
@@ -126,7 +153,7 @@ async function askForAnalysisConfiguration(maxCount) {
     if (!perform_analysis) return { perform_analysis: false, include_pdf_content: false, num_to_analyze: 0 };
 
     const { include_pdf_content } = await promptUser([{ type: 'confirm', name: 'include_pdf_content', message: 'AI analysis to include PDF content (requires PDF download & processing)?', default: true }]);
-    
+
     if (maxCount === 0) {
         console.log("No files available to select for analysis.".yellow);
         return { perform_analysis: true, include_pdf_content, num_to_analyze: 0 };
@@ -147,17 +174,17 @@ async function askForAnalysisConfiguration(maxCount) {
     return { perform_analysis: true, include_pdf_content, num_to_analyze };
 }
 
-function buildMongoQueries(selectedOptions, suppliers) { 
+function buildMongoQueries(selectedOptions, suppliers) {
     const queries = {};
     selectedOptions.forEach(option => {
         let queryPart = {};
         switch (option) {
             case "PENDING_CONFIRMATION": queryPart = { status: "PENDING_CONFIRMATION" }; break;
-            case "INV_AMOUNT_VARIANCE": queryPart = { "exceptions.header.exception_type":"INV_AMOUNT_VARIANCE", "status":"DISPUTED" }; break;
-            case "ITEM_UNMATCHED": queryPart = { "exceptions.line_item.exception_type":"ITEM_UNMATCHED", "status":"DISPUTED" }; break;
-            case "PO_NOT_FOUND": queryPart = { "exceptions.header.exception_type":"PO_NOT_FOUND", "status":"DISPUTED" }; break;
-            case "UNASSIGNED": queryPart = { "pending_reason":"UNASSIGNED", "status":"PENDING_CONFIRMATION" }; break;
-            case "SHIPTOISSUE": queryPart = { "exceptions.header.exception_type":"PO_NOT_FOUND", "status":"DISPUTED", $or:[{ship_to:{$exists:false}},{ship_to:""},{ship_to:null}]}; break;
+            case "INV_AMOUNT_VARIANCE": queryPart = { "exceptions.header.exception_type": "INV_AMOUNT_VARIANCE", "status": "DISPUTED" }; break;
+            case "ITEM_UNMATCHED": queryPart = { "exceptions.line_item.exception_type": "ITEM_UNMATCHED", "status": "DISPUTED" }; break;
+            case "PO_NOT_FOUND": queryPart = { "exceptions.header.exception_type": "PO_NOT_FOUND", "status": "DISPUTED" }; break;
+            case "UNASSIGNED": queryPart = { "pending_reason": "UNASSIGNED", "status": "PENDING_CONFIRMATION" }; break;
+            case "SHIPTOISSUE": queryPart = { "exceptions.header.exception_type": "PO_NOT_FOUND", "status": "DISPUTED", $or: [{ ship_to: { $exists: false } }, { ship_to: "" }, { ship_to: null }] }; break;
             default: console.warn(`Unknown option: ${option}. Skipping.`); return;
         }
         queryPart.file_name = { $regex: /\.pdf$/i };
@@ -165,16 +192,16 @@ function buildMongoQueries(selectedOptions, suppliers) {
         queries[option] = queryPart;
     });
     return queries;
- }
-async function writeMetadataToFile(dataByOption) { 
+}
+async function writeMetadataToFile(dataByOption) {
     try {
         await fsPromises.mkdir(PROJECT_ROOT_OUTPUT_DIR, { recursive: true });
         const fileContent = `// Fetched invoice data at ${new Date().toISOString()}\nexport const fetchedInvoiceReports = ${JSON.stringify(dataByOption, null, 2)};\n`;
         await fsPromises.writeFile(METADATA_OUTPUT_FILE, fileContent);
         console.log(`\nMetadata written to ${METADATA_OUTPUT_FILE}`.green);
     } catch (error) { console.error('Error writing metadata:'.red, error); }
- }
-async function writeAnalysisResultsToFile(analysisResults) { 
+}
+async function writeAnalysisResultsToFile(analysisResults) {
     try {
         await fsPromises.mkdir(PROJECT_ROOT_OUTPUT_DIR, { recursive: true });
         const fileContent = JSON.stringify(analysisResults, null, 2);
@@ -183,8 +210,8 @@ async function writeAnalysisResultsToFile(analysisResults) {
     } catch (error) {
         console.error('Error writing AI analysis results:'.red, error);
     }
- }
-const downloadSingleFileFromS3 = async (s3Key, localDownloadPath) => { 
+}
+const downloadSingleFileFromS3 = async (s3Key, localDownloadPath) => {
     const fullS3Key = (S3_KEY_PREFIX + s3Key).replace(/\/\//g, '/');
     const params = { Bucket: S3_BUCKET_NAME, Key: fullS3Key };
     console.log(`Downloading: Bucket: ${S3_BUCKET_NAME}, Key: ${fullS3Key}`.yellow);
@@ -195,12 +222,12 @@ const downloadSingleFileFromS3 = async (s3Key, localDownloadPath) => {
             .on('end', () => { console.log(`Downloaded ${path.basename(localDownloadPath)} to ${localDownloadPath}`.green); resolve(); })
             .on('error', (error) => {
                 console.error(`Error downloading ${s3Key} (Key: ${fullS3Key}):`.red, error.message);
-                fs.unlink(localDownloadPath, () => {}); reject(error);
+                fs.unlink(localDownloadPath, () => { }); reject(error);
             })
             .pipe(fileStream);
     });
- };
-const downloadInvoiceFiles = async (fetchedDataByOption) => { 
+};
+const downloadInvoiceFiles = async (fetchedDataByOption) => {
     console.log('\n--- Starting Invoice File Downloads ---'.cyan);
     let filesToDownloadList = [];
     for (const reportType in fetchedDataByOption) {
@@ -224,7 +251,7 @@ const downloadInvoiceFiles = async (fetchedDataByOption) => {
     console.log(`Successfully downloaded: ${downloadedCount} files.`.green);
     console.log(`Failed to download: ${failedCount} files.`.red);
     console.log(`Files saved in: ${DOWNLOADED_FILES_BASE_DIR}`.blue);
- };
+};
 
 // --- Helper function to check if a file is a PDF ---
 function isPdf(filePathOrBuffer, originalFileName) {
@@ -240,9 +267,9 @@ function isPdf(filePathOrBuffer, originalFileName) {
 // --- User's Tesseract Function (Integrated) ---
 async function extractTextFromPdf(imageBufferOrPath, originalFileNameForPdfCheck, lang = 'eng') {
     console.log(`[Tesseract Wrapper] Starting PDF processing for: ${originalFileNameForPdfCheck || (typeof imageBufferOrPath === 'string' ? path.basename(imageBufferOrPath) : 'buffer')}`.grey);
-    let tempPdfPath = null; 
-    let generatedImageFiles = []; 
-    let tempImageOutputDir = null; 
+    let tempPdfPath = null;
+    let generatedImageFiles = [];
+    let tempImageOutputDir = null;
     const MAX_PAGES_FOR_ANALYSIS = 3;
 
     try {
@@ -255,7 +282,7 @@ async function extractTextFromPdf(imageBufferOrPath, originalFileNameForPdfCheck
             currentPdfPath = tempPdfPath;
         }
 
-        await fsPromises.access(currentPdfPath); 
+        await fsPromises.access(currentPdfPath);
 
         // 1. Get page count using pdfinfo
         const pdfInfoCommand = `pdfinfo "${currentPdfPath}"`;
@@ -276,15 +303,15 @@ async function extractTextFromPdf(imageBufferOrPath, originalFileNameForPdfCheck
             if (pageCount > MAX_PAGES_FOR_ANALYSIS) {
                 const warningMessage = `PDF_TOO_LARGE: Document '${originalFileNameForPdfCheck || path.basename(currentPdfPath)}' has ${pageCount} pages (max ${MAX_PAGES_FOR_ANALYSIS} allowed). Skipping OCR.`;
                 console.warn(warningMessage.yellow);
-                return warningMessage; 
+                return warningMessage;
             }
         }
-        
+
         console.log("[Tesseract Wrapper] PDF page count acceptable or undetermined (processing page 1). Converting page 1 to image via pdftoppm...".blue);
         tempImageOutputDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'pdftoppm-output-'));
         const outputImagePrefixBase = path.basename(currentPdfPath, '.pdf');
         const outputImagePrefix = path.join(tempImageOutputDir, `page_${outputImagePrefixBase}`);
-        
+
         const convertCommand = `pdftoppm -png -r 175 -f 1 -l 1 "${currentPdfPath}" "${outputImagePrefix}"`;
         console.log(`[Tesseract Wrapper] Executing: ${convertCommand}`.grey);
         const { stdout: pdftoppmStdout, stderr: pdftoppmStderrPpm } = await execPromise(convertCommand);
@@ -333,23 +360,23 @@ async function extractTextFromPdf(imageBufferOrPath, originalFileNameForPdfCheck
     }
 }
 
-function constructGemmaPrompt(invoiceData, pdfTextIfAvailable, reportType, analysisConfig) { 
+function constructGemmaPrompt(invoiceData, pdfTextIfAvailable, reportType, analysisConfig) {
     const templateInfo = GEMMA_PROMPT_TEMPLATES[reportType];
-    let promptText; 
+    let promptText;
 
     if (!templateInfo) {
         console.warn(`No prompt template for report type: ${reportType}. Using generic fallback.`.yellow);
         promptText = `Analyze this invoice. File: ${invoiceData.file_name || 'N/A'}. JSON Data: ${JSON.stringify(invoiceData)}.`;
-        if (pdfTextIfAvailable && analysisConfig.include_pdf_content) { 
+        if (pdfTextIfAvailable && analysisConfig.include_pdf_content) {
             promptText += `\n\nPDF Text Content (first 2000 chars):\n${pdfTextIfAvailable.substring(0, 2000)}\n...(truncated if longer)`;
         }
-        return promptText; 
+        return promptText;
     }
 
     promptText = templateInfo.base_prompt;
     promptText = promptText.replace('{file_name}', invoiceData.file_name || 'N/A');
     promptText = promptText.replace('{json_data}', JSON.stringify(invoiceData, null, 2));
-    
+
     if (templateInfo.criteria) {
         promptText = promptText.replace('{criteria_list}', templateInfo.criteria.join('; '));
     }
@@ -369,7 +396,7 @@ function constructGemmaPrompt(invoiceData, pdfTextIfAvailable, reportType, analy
 
     if (pdfTextIfAvailable && analysisConfig.include_pdf_content) {
         if (pdfTextIfAvailable.startsWith("PDF_TOO_LARGE:")) { // Handle specific message
-             promptText = promptText.replace('{pdf_content_section}', `\n(Note: ${pdfTextIfAvailable})`);
+            promptText = promptText.replace('{pdf_content_section}', `\n(Note: ${pdfTextIfAvailable})`);
         } else {
             const pdfTextSection = `\n\nExtracted PDF Text Content (first 3000 chars for context):\nPDF_TEXT_CONTENT_START\n${pdfTextIfAvailable.substring(0, 3000)}\n...(text truncated if longer)...\nPDF_TEXT_CONTENT_END`;
             promptText = promptText.replace('{pdf_content_section}', pdfTextSection);
@@ -377,20 +404,20 @@ function constructGemmaPrompt(invoiceData, pdfTextIfAvailable, reportType, analy
     } else {
         promptText = promptText.replace('{pdf_content_section}', '\n(User opted out of PDF text content analysis, or PDF text was not available/extraction failed)');
     }
-    
-    return promptText; 
- }
-async function callGemmaApi(promptParts, invoiceFileName, analysisConfig) { 
-    if (!genAI) { 
+
+    return promptText;
+}
+async function callGemmaApi(promptParts, invoiceFileName, analysisConfig) {
+    if (!genAI) {
         const errorMsg = "Gemma SDK (GoogleGenerativeAI) not initialized. Check GEMMA_API_KEY.";
         console.error(errorMsg.red);
         return `Error: ${errorMsg}`;
     }
 
     console.log(`\nCalling Gemma API for: ${invoiceFileName} using model ${GEMMA_MODEL_NAME}`.blue);
-    
+
     try {
-        const model = genAI.getGenerativeModel({ 
+        const model = genAI.getGenerativeModel({
             model: GEMMA_MODEL_NAME,
             safetySettings: [
                 { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
@@ -400,11 +427,11 @@ async function callGemmaApi(promptParts, invoiceFileName, analysisConfig) {
             ],
         });
 
-        const result = await model.generateContent(promptParts); 
+        const result = await model.generateContent(promptParts);
         const response = await result.response;
-        const text = response.text(); 
+        const text = response.text();
 
-        console.log(`Gemma raw response for ${invoiceFileName}:`.grey, text.substring(0,200) + "...");
+        console.log(`Gemma raw response for ${invoiceFileName}:`.grey, text.substring(0, 200) + "...");
         return text.trim();
 
     } catch (error) {
@@ -414,14 +441,14 @@ async function callGemmaApi(promptParts, invoiceFileName, analysisConfig) {
         }
         return `Gemma SDK call failed: ${error.message}.`;
     }
- }
-async function analyzeInvoicesWithGemma(invoicesToAnalyze, analysisConfig) { 
+}
+async function analyzeInvoicesWithGemma(invoicesToAnalyze, analysisConfig) {
     console.log(`\n--- Starting AI Analysis for ${invoicesToAnalyze.length} Invoices ---`.cyan.bold);
-    const analysisResults = {}; 
+    const analysisResults = {};
 
     if (!invoicesToAnalyze || invoicesToAnalyze.length === 0) {
         console.log("No invoices provided to analyze.".yellow);
-        return analysisResults; 
+        return analysisResults;
     }
 
     for (let i = 0; i < invoicesToAnalyze.length; i++) {
@@ -444,18 +471,18 @@ async function analyzeInvoicesWithGemma(invoicesToAnalyze, analysisConfig) {
 
         let pdfTextContent = null;
         let gemmaResponse;
-        let analysisReason = "Analysis not performed."; 
+        let analysisReason = "Analysis not performed.";
         let suggestedFix = null;
 
         if (analysisConfig.include_pdf_content) {
             const pdfFileName = path.basename(docToAnalyze.file_name) || docToAnalyze.original_filename;
             const pdfPath = path.join(DOWNLOADED_FILES_BASE_DIR, pdfFileName);
             // Use the integrated extractTextFromPdf (which is user's extractTextTesseract)
-            pdfTextContent = await extractTextFromPdf(pdfPath, pdfFileName); 
+            pdfTextContent = await extractTextFromPdf(pdfPath, pdfFileName);
 
             if (pdfTextContent && pdfTextContent.startsWith("PDF_TOO_LARGE:")) {
-                analysisReason = pdfTextContent; 
-                gemmaResponse = analysisReason; 
+                analysisReason = pdfTextContent;
+                gemmaResponse = analysisReason;
                 console.log(`Analysis for ${docToAnalyze.file_name}: ${analysisReason}`.yellow);
             } else if (pdfTextContent === null) {
                 analysisReason = "PDF text extraction failed.";
@@ -463,13 +490,13 @@ async function analyzeInvoicesWithGemma(invoicesToAnalyze, analysisConfig) {
                 console.log(`Analysis for ${docToAnalyze.file_name}: ${analysisReason}`.yellow);
             }
         }
-        
+
         // Only call Gemma if PDF wasn't too large and text extraction didn't explicitly fail to a point of no text
         if (!(analysisReason.startsWith("PDF_TOO_LARGE:") || analysisReason === "PDF text extraction failed.")) {
             const promptForGemma = constructGemmaPrompt(docToAnalyze, pdfTextContent, reportType, analysisConfig);
-            gemmaResponse = await callGemmaApi(promptForGemma, docToAnalyze.file_name, analysisConfig); 
+            gemmaResponse = await callGemmaApi(promptForGemma, docToAnalyze.file_name, analysisConfig);
 
-            analysisReason = gemmaResponse; 
+            analysisReason = gemmaResponse;
             const fixDataMarker = "SUGGESTED_FIX_DATA:";
             const markerIndex = (gemmaResponse || "").indexOf(fixDataMarker);
 
@@ -483,14 +510,14 @@ async function analyzeInvoicesWithGemma(invoicesToAnalyze, analysisConfig) {
                 if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
                     jsonStringToParse = potentialJsonString.substring(firstBrace, lastBrace + 1);
                 } else {
-                    console.warn(`Could not clearly isolate JSON object in SUGGESTED_FIX_DATA for ${docToAnalyze.file_name}. Raw: "${potentialJsonString.substring(0,100)}..."`.yellow);
+                    console.warn(`Could not clearly isolate JSON object in SUGGESTED_FIX_DATA for ${docToAnalyze.file_name}. Raw: "${potentialJsonString.substring(0, 100)}..."`.yellow);
                 }
                 if (jsonStringToParse) {
                     try {
                         suggestedFix = JSON.parse(jsonStringToParse);
                         console.log(`Parsed suggested fix for ${docToAnalyze.file_name}:`.magenta, suggestedFix);
                     } catch (e) {
-                        console.warn(`Could not parse SUGGESTED_FIX_DATA JSON for ${docToAnalyze.file_name}. Attempted: "${jsonStringToParse.substring(0,100)}...". Error:`.yellow, e.message);
+                        console.warn(`Could not parse SUGGESTED_FIX_DATA JSON for ${docToAnalyze.file_name}. Attempted: "${jsonStringToParse.substring(0, 100)}...". Error:`.yellow, e.message);
                     }
                 }
             }
@@ -508,7 +535,7 @@ async function analyzeInvoicesWithGemma(invoicesToAnalyze, analysisConfig) {
                 status: docToAnalyze.status, pending_reason: docToAnalyze.pending_reason
             }
         };
-        if(suggestedFix) {
+        if (suggestedFix) {
             console.log(`Gemma suggested fix for ${docToAnalyze.file_name}:`.cyan, suggestedFix);
         }
         console.log("-".repeat(60).grey);
@@ -520,50 +547,36 @@ async function analyzeInvoicesWithGemma(invoicesToAnalyze, analysisConfig) {
         console.log("No analysis results were generated to write.".yellow);
     }
     return analysisResults;
- }
+}
 
+async function runAnalysisCycle(client) { // Accepts the global client
+    const cycleInputs = await getUserInputsForCycle();
 
-// --- Main Execution ---
-async function main() {
-    let initialInputs;
-    try {
-        initialInputs = await getUserInputs();
-    } catch (error) {
-        console.error("Failed to get user inputs:".red, error);
-        return; 
-    }
-    
-    if (initialInputs === undefined || Object.keys(initialInputs).length === 0) { 
-        console.error("CRITICAL: getUserInputs did not return valid answers. Exiting.".red.bold);
-        return;
-    }
-
-    if (initialInputs.clear_previous_data) {
+    if (cycleInputs.clear_previous_data_for_cycle) {
         await cleanupPreviousData();
     } else {
-        console.log("\nSkipping cleanup of previous data.".yellow);
+        console.log("\nSkipping cleanup for this run.".yellow);
     }
 
     const {
         database_name, group_id, selected_options, suppliers_input, delete_after_fetch
-    } = initialInputs;
+    } = cycleInputs;
 
     const suppliers = suppliers_input ? suppliers_input.split(',').map(s => s.trim()).filter(s => s.length > 0) : [];
     const reportQueries = buildMongoQueries(selected_options, suppliers);
 
     if (Object.keys(reportQueries).length === 0) {
-        console.log("No valid report options selected. Exiting.".yellow); return;
+        console.log("No valid report options selected for this run. Skipping cycle.".yellow);
+        return;
     }
 
-    const client = new MongoClient(MONGODB_URI);
     let fetchedDataByOption = {};
     let baseQueriesForOptions = {};
     let allFetchedDocumentsForAnalysis = [];
 
     try {
-        await client.connect();
-        console.log(`\nConnected to MongoDB. DB: ${database_name}`.green);
-        const db = client.db(database_name);
+        console.log(`\nUsing database for this cycle: ${database_name}`.green);
+        const db = client.db(database_name); // Use the selected database for this cycle
         const collection = db.collection(COLLECTION_NAME);
 
         for (const option of selected_options) {
@@ -584,13 +597,13 @@ async function main() {
             if (proceedWithDownload) {
                 await downloadInvoiceFiles(fetchedDataByOption);
             } else {
-                console.log("\nSkipping file downloads.".yellow);
+                console.log("\nSkipping file downloads for this run.".yellow);
             }
 
             const analysisConfig = await askForAnalysisConfiguration(allFetchedDocumentsForAnalysis.length);
             
             if (analysisConfig.perform_analysis && analysisConfig.num_to_analyze > 0) {
-                console.log("\n--- AI Analysis Configuration ---".cyan.bold);
+                console.log("\n--- AI Analysis Configuration for this run ---".cyan.bold);
                 console.log(`Perform AI Analysis: Yes`.green);
                 console.log(`Include PDF Content (as text/image): ${analysisConfig.include_pdf_content ? 'Yes' : 'No'}`.blue);
                 console.log(`Number of Invoices to Analyze: ${analysisConfig.num_to_analyze}`.blue);
@@ -602,10 +615,10 @@ async function main() {
                     console.log("\n--- Requesting General Fix Suggestions from Gemma (Conceptual) ---".cyan.bold);
                     console.log("Step 8 (Fix suggestions from Gemma based on overall analysis) to be implemented if API is configured.".yellow);
                 } else {
-                    console.log("AI Analysis completed, but no specific results were generated or stored.".yellow);
+                    console.log("AI Analysis completed for this run, but no specific results were generated or stored.".yellow);
                 }
             } else {
-                console.log("\nSkipping AI analysis based on user input or no files to analyze.".yellow);
+                console.log("\nSkipping AI analysis for this run based on user input or no files to analyze.".yellow);
             }
 
             if (delete_after_fetch) { 
@@ -621,17 +634,54 @@ async function main() {
                 }
             }
         } else {
-            console.log("\nNo data fetched. Nothing to write, download, analyze, or show delete query for.".yellow);
+            console.log("\nNo data fetched for this run. Nothing to write, download, analyze, or show delete query for.".yellow);
         }
     } catch (err) {
-        console.error('Error in main process:'.red, err);
-    } finally {
-        if (client && client.topology && client.topology.isConnected()) {
-            await client.close(); console.log('MongoDB connection closed.'.grey);
-        }
+        console.error('Error during analysis cycle:'.red, err);
+        if (err.cause) console.error('Cause: '.red, err.cause);
+        // We don't re-throw here to allow the main loop to ask if user wants to continue
     }
 }
 
-main().catch(error => {
-    console.error("Unhandled error in main execution:".red.bold, error);
+// --- Main Application Loop ---
+async function mainAppLoop() {
+    await initializeApp(); // Connect to MongoDB once at the start
+
+    let keepRunning = true;
+    while (keepRunning) {
+        try {
+            await runAnalysisCycle(mongoClient); // Pass the connected client
+        } catch (cycleError) {
+            console.error("A critical error occurred in the analysis cycle, trying to continue or exit gracefully:".red.bold, cycleError);
+        }
+
+        const prompter = (inquirer.default && inquirer.default.prompt) ? inquirer.default.prompt : inquirer.prompt;
+        if (!prompter) {
+            console.error("Inquirer not available, cannot ask to continue. Exiting loop.".red);
+            keepRunning = false; // Exit if inquirer is broken
+        } else {
+            try {
+                const { continueAnalysis } = await prompter([
+                    { type: 'confirm', name: 'continueAnalysis', message: 'Do you want to run another analysis cycle?', default: true }
+                ]);
+                keepRunning = continueAnalysis;
+            } catch (promptError) {
+                console.error("Error getting continue confirmation: ".red, promptError);
+                keepRunning = false; // Default to exit on prompt error
+            }
+        }
+
+        if (!keepRunning) {
+            console.log("\nExiting analysis application.".blue);
+        }
+    }
+
+    await closeApp(); // Close MongoDB connection when done
+}
+
+// --- Start the application ---
+mainAppLoop().catch(error => {
+    console.error("Unhandled fatal error in application loop:".red.bold, error);
+    if (error.cause) console.error("Cause:".red.bold, error.cause);
+    closeApp(); // Attempt to close connection even on unhandled error in the loop itself
 });
